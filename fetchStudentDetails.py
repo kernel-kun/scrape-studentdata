@@ -13,7 +13,7 @@ ZIP_FILE = "student_data.zip"
 
 
 def create_encrypted_zip(files, password):
-    pyminizip.compress(
+    pyminizip.compress_multiple(
         files, ZIP_FILE, password, compression=5
     )  # Adjust compression level as needed
 
