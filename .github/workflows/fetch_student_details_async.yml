@@ -1,4 +1,4 @@
-name: Student Data Scraper
+name: Student Data Scraper (Async)
 
 on:
   workflow_dispatch:
