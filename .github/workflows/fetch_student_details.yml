@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      API_URL: ${{ env.API_URL }}
+      API_URL: ${{ vars.API_URL }}
       ROLL_NUMBERS: ${{ secrets.ROLL_NUMBERS }}
       ENCRYPTION_PASSWORD: ${{ secrets.ENCRYPTION_PASSWORD }}
 
