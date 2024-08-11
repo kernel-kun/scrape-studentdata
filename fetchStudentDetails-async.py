@@ -38,22 +38,31 @@ async def get_student_data(client, roll_no):
     try:
         response = await client.post(url, headers=headers, data=data)
         response.raise_for_status()  # Raise an exception for error HTTP status codes
-        # Decode the response text using utf-8-sig to handle BOM
-        text = response.text.encode("utf-8").decode("utf-8-sig")
-        data = json.loads(text)
+        
+        if response.content:
+            # Decode the response text using utf-8-sig to handle BOM
+            text = response.text.encode("utf-8").decode("utf-8-sig")
+            data = json.loads(text)
 
-        # Check if all values are null
-        if all(value is None for value in data["HTML"].values()):
-            logging.warning(f"All fields are null for roll number {roll_no}")
-            return None
+            # Check if all values are null
+            if all(value is None for value in data["HTML"].values()):
+                logging.warning(f"All fields are null for roll number {roll_no}")
+                return None
+            else:
+                return data["HTML"]
         else:
-            return data["HTML"]
+            logging.error(f"Empty response for roll number {roll_no}")
+            return None
+
+    except json.JSONDecodeError as json_err:
+        logging.error(f"JSON decode error for roll number {roll_no}: {json_err}")
+        logging.error(f"Response content: {response.text}")
+        return None
 
     except httpx.RequestError as e:
         logging.error(f"Error for roll number {roll_no}: {e}")
         logging.error(f"Response: {response.text}")
         return None
-
 
 def write_data_to_excel(data, sheet):
     """
