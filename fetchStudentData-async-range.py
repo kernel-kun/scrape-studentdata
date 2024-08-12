@@ -118,7 +118,7 @@ async def main():
     sheet.title = "Student Data"
 
     # Fetch roll numbers from an environment variable and split into a list
-    roll_numbers = os.getenv("ROLL_NUMBERS_RANGE").split(",")
+    roll_numbers = os.getenv("ROLL_NUMBERS_RANGE").split(" ")
 
     # Create a semaphore to control the concurrency level
     semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
