@@ -126,8 +126,8 @@ async def main():
     async with httpx.AsyncClient() as client:
         # Create tasks to fetch student data for each roll number
         tasks = [
-            get_student_data(roll_no.strip(), client, semaphore)
-            for roll_no in range(roll_numbers[0], roll_numbers[1] + 1)
+            get_student_data(str(roll_no), client, semaphore)
+            for roll_no in range(int(roll_numbers[0].strip()), int(roll_numbers[1].strip()) + 1)
         ]
         # Execute tasks and display a progress bar using tqdm
         results = await tqdm_asyncio.gather(*tasks, total=len(roll_numbers), desc="Fetching Student Data")
