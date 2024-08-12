@@ -54,15 +54,15 @@ async def get_student_data(roll_no, client, semaphore):
                 text = response.text.encode("utf-8").decode("utf-8-sig")
                 data = json.loads(text)
 
-                # Check if all fields are null, indicating invalid data
-                if all(value is None for value in data["HTML"].values()):
-                    logging.warning(f"All fields are null for roll number {roll_no}")
+                # Check if the rollNo field is empty
+                if not data["HTML"].get("rollNo"):
+                    logging.warning(f"Empty rollNo for roll number {roll_no}. Skipping...")
                     return None
                 else:
                     return data["HTML"]
             else:
                 # Handle cases where the response content is empty
-                logging.error(f"Empty response for roll number {roll_no}")
+                logging.warning(f"Empty response for roll number {roll_no}")
                 return None
 
         except json.JSONDecodeError as json_err:
