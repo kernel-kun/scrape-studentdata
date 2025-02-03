@@ -3,16 +3,14 @@ import asyncio
 import httpx
 import random
 import logging
-from typing import List, Optional
-from tqdm.asyncio import tqdm
-import sys
+from typing import List
 
 class AsyncProxyScraper:
     def __init__(self, 
                  target_url: str, 
                  proxy_sources: List[str],
                  max_concurrent_requests: int = 50,
-                 total_requests: int = 100000,
+                 total_requests: int = 10000,
                  timeout: float = 10.0):
         """
         Initialize AsyncProxyScraper with configuration parameters
@@ -51,7 +49,7 @@ class AsyncProxyScraper:
                         return response.text.strip().split('\n')
                 except Exception as e:
                     self.logger.warning(f"Error fetching proxies from {source}: {e}")
-                    return []
+                return []  # Return empty list on error
             
             # Gather results from all sources concurrently
             source_results = await asyncio.gather(
@@ -63,7 +61,9 @@ class AsyncProxyScraper:
                 proxies.extend(result)
         
         # Remove duplicates and filter out potentially invalid proxies
-        return list(set(proxy for proxy in proxies if ':' in proxy))
+        valid_proxies = list(set(proxy for proxy in proxies if ':' in proxy))
+        self.logger.info(f"Fetched {len(valid_proxies)} proxies")
+        return valid_proxies
 
     async def test_proxy(self, proxy: str, client: httpx.AsyncClient) -> bool:
         """
@@ -85,84 +85,76 @@ class AsyncProxyScraper:
                 timeout=self.timeout
             )
             return response.status_code == 200
-        except Exception:
+        except Exception as e:
+            self.logger.debug(f"Proxy {proxy} failed: {e}")
             return False
 
     async def scrape_with_proxy_rotation(self):
         """
-        Main scraping method with async proxy rotation and tqdm progress tracking
+        Main scraping method with async proxy rotation
         """
         # Fetch initial proxies
         proxies = await self.fetch_public_proxies()
-        
-        # Shuffle to distribute load
+        if not proxies:
+            self.logger.error("No proxies available. Exiting.")
+            return
+
+        # Shuffle proxies to distribute load
         random.shuffle(proxies)
-        
-        # Limit proxies to total requested
-        proxies = proxies[:self.total_requests]
-        
-        # Metrics tracking with thread-safe counters
+
+        # Metrics tracking
         successful_requests = 0
-        
-        # Create a thread-safe async lock
+        total_attempts = 0
+
+        # Shared asynchronous lock for safe increments
         lock = asyncio.Lock()
-        
-        # Create tqdm progress bar
-        progress_bar = tqdm(
-            total=len(proxies), 
-            desc="Proxy Testing", 
-            unit="proxy",
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
-            file=sys.stdout
-        )
-        
+
+        # Semaphore to limit concurrent requests
+        semaphore = asyncio.Semaphore(self.max_concurrent_requests)
+
         async def fetch_with_proxy(proxy):
-            nonlocal successful_requests
+            nonlocal successful_requests, total_attempts
             
-            try:
+            async with semaphore:
+                # Create a dedicated client for each request (due to per-request proxy configuration)
                 async with httpx.AsyncClient() as client:
                     success = await self.test_proxy(proxy, client)
                     
-                    # Update metrics and progress bar
+                    # Safely update counters using the shared lock
                     async with lock:
+                        total_attempts += 1
                         if success:
                             successful_requests += 1
-                        progress_bar.update(1)
                     
                     return success
-            except Exception:
-                async with lock:
-                    progress_bar.update(1)
-                return False
+
+        # Limit total number of requests to either total_requests or available proxies
+        tasks = [
+            fetch_with_proxy(proxy) 
+            for proxy in proxies[: min(self.total_requests, len(proxies))]
+        ]
         
         # Run all tasks concurrently
-        await asyncio.gather(*[fetch_with_proxy(proxy) for proxy in proxies])
+        await asyncio.gather(*tasks)
         
-        # Close progress bar
-        progress_bar.close()
-        
-        # Final metrics display
-        print("\n--- Proxy Scraping Summary ---")
-        print(f"Total Proxies Tested: {len(proxies)}")
-        print(f"Successful Proxies: {successful_requests}")
-        print(f"Success Rate: {successful_requests/len(proxies)*100:.2f}%")
-        
-        # Optional: Return metrics for potential further processing
-        return {
-            'total_proxies': len(proxies),
-            'successful_proxies': successful_requests,
-            'success_rate': successful_requests/len(proxies)*100
-        }
+        # Log final metrics
+        self.logger.info(f"Total Proxy Attempts: {total_attempts}")
+        self.logger.info(f"Successful Requests: {successful_requests}")
+        if total_attempts > 0:
+            self.logger.info(f"Success Rate: {successful_requests / total_attempts * 100:.2f}%")
+        else:
+            self.logger.info("No proxy attempts were made.")
 
 def main():
     # Fetch configuration from environment variables
     target_url = os.environ.get('TARGET_URL')
     proxy_sources_str = os.environ.get('PROXY_SOURCES', '').strip()
-
-
+    
     # Split proxy sources, handling pote"ntial empty input
     proxy_sources = [src.strip() for src in proxy_sources_str.split(',') if src.strip()] or [
-        'https://raw.githubusercontent.com/monosans/proxy-list/refs/heads/main/proxies/http.txt','https://raw.githubusercontent.com/monosans/proxy-list/refs/heads/main/proxies_anonymous/http.txt','https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt'
+        'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt',
+        'https://raw.githubusercontent.com/monosans/proxy-list/refs/heads/main/proxies/http.txt',
+        'https://raw.githubusercontent.com/monosans/proxy-list/refs/heads/main/proxies_anonymous/http.txt'
     ]
     
     # Validate target URL
@@ -182,3 +174,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
