@@ -3,7 +3,9 @@ import asyncio
 import httpx
 import random
 import logging
-from typing import List, Optional, Tuple
+from typing import List, Optional
+from tqdm.asyncio import tqdm
+import sys
 
 class AsyncProxyScraper:
     def __init__(self, 
@@ -88,7 +90,7 @@ class AsyncProxyScraper:
 
     async def scrape_with_proxy_rotation(self):
         """
-        Main scraping method with async proxy rotation
+        Main scraping method with async proxy rotation and tqdm progress tracking
         """
         # Fetch initial proxies
         proxies = await self.fetch_public_proxies()
@@ -96,47 +98,61 @@ class AsyncProxyScraper:
         # Shuffle to distribute load
         random.shuffle(proxies)
         
-        # Metrics tracking
-        successful_requests = 0
-        total_attempts = 0
+        # Limit proxies to total requested
+        proxies = proxies[:self.total_requests]
         
-        # Use a semaphore to limit concurrent requests
-        semaphore = asyncio.Semaphore(self.max_concurrent_requests)
+        # Metrics tracking with thread-safe counters
+        successful_requests = 0
+        
+        # Create a thread-safe async lock
+        lock = asyncio.Lock()
+        
+        # Create tqdm progress bar
+        progress_bar = tqdm(
+            total=len(proxies), 
+            desc="Proxy Testing", 
+            unit="proxy",
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+            file=sys.stdout
+        )
         
         async def fetch_with_proxy(proxy):
-            nonlocal successful_requests, total_attempts
+            nonlocal successful_requests
             
-            async with semaphore:
+            try:
                 async with httpx.AsyncClient() as client:
-                    try:
-                        success = await self.test_proxy(proxy, client)
-                        
-                        # Thread-safe increment
+                    success = await self.test_proxy(proxy, client)
+                    
+                    # Update metrics and progress bar
+                    async with lock:
                         if success:
-                            with asyncio.Lock():
-                                successful_requests += 1
-                        
-                        # Increment total attempts
-                        with asyncio.Lock():
-                            total_attempts += 1
-                        
-                        return success
-                    except Exception:
-                        return False
-        
-        # Limit total number of requests
-        tasks = [
-            fetch_with_proxy(proxy) 
-            for proxy in proxies[:self.total_requests]
-        ]
+                            successful_requests += 1
+                        progress_bar.update(1)
+                    
+                    return success
+            except Exception:
+                async with lock:
+                    progress_bar.update(1)
+                return False
         
         # Run all tasks concurrently
-        await asyncio.gather(*tasks)
+        await asyncio.gather(*[fetch_with_proxy(proxy) for proxy in proxies])
         
-        # Log final metrics
-        self.logger.info(f"Total Proxy Attempts: {total_attempts}")
-        self.logger.info(f"Successful Requests: {successful_requests}")
-        self.logger.info(f"Success Rate: {successful_requests/total_attempts*100:.2f}%")
+        # Close progress bar
+        progress_bar.close()
+        
+        # Final metrics display
+        print("\n--- Proxy Scraping Summary ---")
+        print(f"Total Proxies Tested: {len(proxies)}")
+        print(f"Successful Proxies: {successful_requests}")
+        print(f"Success Rate: {successful_requests/len(proxies)*100:.2f}%")
+        
+        # Optional: Return metrics for potential further processing
+        return {
+            'total_proxies': len(proxies),
+            'successful_proxies': successful_requests,
+            'success_rate': successful_requests/len(proxies)*100
+        }
 
 def main():
     # Fetch configuration from environment variables
