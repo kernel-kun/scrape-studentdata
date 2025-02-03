@@ -12,7 +12,7 @@ class AsyncProxyScraper:
                  target_url: str, 
                  proxy_sources: List[str],
                  max_concurrent_requests: int = 50,
-                 total_requests: int = 100,
+                 total_requests: int = 100000,
                  timeout: float = 10.0):
         """
         Initialize AsyncProxyScraper with configuration parameters
