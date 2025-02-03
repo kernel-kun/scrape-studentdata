@@ -1,129 +1,168 @@
 import os
-import requests
+import asyncio
+import httpx
 import random
-import time
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
-class ProxyScraper:
-    def __init__(self,
-                 target_url: str,
+class AsyncProxyScraper:
+    def __init__(self, 
+                 target_url: str, 
                  proxy_sources: List[str],
-                 max_retries: int = 5,
-                 timeout: int = 10):
+                 max_concurrent_requests: int = 50,
+                 total_requests: int = 100,
+                 timeout: float = 10.0):
         """
-        Initialize ProxyScraper with configuration parameters
-
+        Initialize AsyncProxyScraper with configuration parameters
+        
         :param target_url: URL to scrape
         :param proxy_sources: List of URLs to fetch proxy lists
-        :param max_retries: Maximum number of retry attempts for a proxy
+        :param max_concurrent_requests: Maximum number of concurrent requests
+        :param total_requests: Total number of requests to attempt
         :param timeout: Connection timeout in seconds
         """
         self.target_url = target_url
         self.proxy_sources = proxy_sources
-        self.max_retries = max_retries
+        self.max_concurrent_requests = max_concurrent_requests
+        self.total_requests = total_requests
         self.timeout = timeout
+        
+        # Configure logging
         self.logger = logging.getLogger(__name__)
-        logging.basicConfig(level=logging.INFO,
-                            format='%(asctime)s - %(levelname)s - %(message)s')
+        logging.basicConfig(
+            level=logging.INFO, 
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
 
-    def fetch_public_proxies(self) -> List[str]:
+    async def fetch_public_proxies(self) -> List[str]:
         """
-        Fetch public proxy list from configured sources
-
+        Asynchronously fetch public proxy list from configured sources
+        
         :return: List of proxy servers in format 'ip:port'
         """
         proxies = []
-        for source in self.proxy_sources:
-            try:
-                response = requests.get(source, timeout=self.timeout)
-                if response.status_code == 200:
-                    proxies.extend(response.text.strip().split('\n'))
-            except Exception as e:
-                self.logger.warning(f"Error fetching proxies from {source}: {e}")
-
+        async with httpx.AsyncClient() as client:
+            async def fetch_source(source):
+                try:
+                    response = await client.get(source, timeout=self.timeout)
+                    if response.status_code == 200:
+                        return response.text.strip().split('\n')
+                except Exception as e:
+                    self.logger.warning(f"Error fetching proxies from {source}: {e}")
+                    return []
+            
+            # Gather results from all sources concurrently
+            source_results = await asyncio.gather(
+                *[fetch_source(source) for source in self.proxy_sources]
+            )
+            
+            # Flatten and deduplicate results
+            for result in source_results:
+                proxies.extend(result)
+        
         # Remove duplicates and filter out potentially invalid proxies
         return list(set(proxy for proxy in proxies if ':' in proxy))
 
-    def test_proxy(self, proxy: str) -> Optional[dict]:
+    async def test_proxy(self, proxy: str, client: httpx.AsyncClient) -> bool:
         """
         Test a single proxy
-
+        
         :param proxy: Proxy in format 'ip:port'
-        :return: Working proxy dictionary or None
+        :param client: Async HTTP client
+        :return: True if proxy works, False otherwise
         """
         proxies = {
-            'http': f'http://{proxy}',
-            'https': f'http://{proxy}'
+            'http://': f'http://{proxy}',
+            'https://': f'http://{proxy}'
         }
-
+        
         try:
-            response = requests.get(
-                self.target_url,
-                proxies=proxies,
+            response = await client.get(
+                self.target_url, 
+                proxies=proxies, 
                 timeout=self.timeout
             )
-            if response.status_code == 200:
-                self.logger.info(f"Proxy {proxy} is working")
-                return proxies
-        except Exception as e:
-            self.logger.warning(f"Proxy {proxy} failed: {e}")
+            return response.status_code == 200
+        except Exception:
+            return False
 
-        return None
-
-    def scrape_with_proxy_rotation(self):
+    async def scrape_with_proxy_rotation(self):
         """
-        Main scraping method with proxy rotation
+        Main scraping method with async proxy rotation
         """
-        while True:
-            # Fetch fresh proxies
-            proxies = self.fetch_public_proxies()
-            random.shuffle(proxies)
-
-            for proxy in proxies:
-                for attempt in range(self.max_retries):
+        # Fetch initial proxies
+        proxies = await self.fetch_public_proxies()
+        
+        # Shuffle to distribute load
+        random.shuffle(proxies)
+        
+        # Metrics tracking
+        successful_requests = 0
+        total_attempts = 0
+        
+        # Use a semaphore to limit concurrent requests
+        semaphore = asyncio.Semaphore(self.max_concurrent_requests)
+        
+        async def fetch_with_proxy(proxy):
+            nonlocal successful_requests, total_attempts
+            
+            async with semaphore:
+                async with httpx.AsyncClient() as client:
                     try:
-                        working_proxy = self.test_proxy(proxy)
-                        if working_proxy:
-                            # Perform actual scraping here
-                            response = requests.get(
-                                self.target_url,
-                                proxies=working_proxy,
-                                timeout=self.timeout
-                            )
-
-                            # Process and log the response
-                            self.logger.info(f"Successfully scraped {self.target_url} via {proxy}")
-                            self.logger.info(f"Response length: {len(response.text)} characters")
-
-                            # Optional: Add your specific parsing logic here
-                            break
-                    except Exception as e:
-                        self.logger.error(f"Scraping attempt {attempt + 1} failed: {e}")
-
-                # Wait between proxy attempts to avoid rate limiting
-                time.sleep(random.uniform(1, 3))
-
-            # Wait before next full proxy rotation cycle
-            time.sleep(random.uniform(10, 30))
+                        success = await self.test_proxy(proxy, client)
+                        
+                        # Thread-safe increment
+                        if success:
+                            with asyncio.Lock():
+                                successful_requests += 1
+                        
+                        # Increment total attempts
+                        with asyncio.Lock():
+                            total_attempts += 1
+                        
+                        return success
+                    except Exception:
+                        return False
+        
+        # Limit total number of requests
+        tasks = [
+            fetch_with_proxy(proxy) 
+            for proxy in proxies[:self.total_requests]
+        ]
+        
+        # Run all tasks concurrently
+        await asyncio.gather(*tasks)
+        
+        # Log final metrics
+        self.logger.info(f"Total Proxy Attempts: {total_attempts}")
+        self.logger.info(f"Successful Requests: {successful_requests}")
+        self.logger.info(f"Success Rate: {successful_requests/total_attempts*100:.2f}%")
 
 def main():
     # Fetch configuration from environment variables
     target_url = os.environ.get('TARGET_URL')
     proxy_sources_str = os.environ.get('PROXY_SOURCES', '').strip()
 
+
     # Split proxy sources, handling pote"ntial empty input
     proxy_sources = [src.strip() for src in proxy_sources_str.split(',') if src.strip()] or [
         'https://raw.githubusercontent.com/monosans/proxy-list/refs/heads/main/proxies/http.txt','https://raw.githubusercontent.com/monosans/proxy-list/refs/heads/main/proxies_anonymous/http.txt','https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt'
     ]
-
+    
     # Validate target URL
     if not target_url:
         raise ValueError("TARGET_URL environment variable must be set")
-
-    # Initialize and run scraper
-    scraper = ProxyScraper(target_url, proxy_sources)
-    scraper.scrape_with_proxy_rotation()
+    
+    # Initialize scraper
+    scraper = AsyncProxyScraper(
+        target_url, 
+        proxy_sources, 
+        max_concurrent_requests=50,  # Adjust based on your needs
+        total_requests=100  # Adjust based on your needs
+    )
+    
+    # Run the async scraper
+    asyncio.run(scraper.scrape_with_proxy_rotation())
 
 if __name__ == '__main__':
     main()
