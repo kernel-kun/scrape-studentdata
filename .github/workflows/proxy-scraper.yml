@@ -1,0 +1,41 @@
+name: Continuous Proxy Web Scraper
+
+on:
+  workflow_dispatch:
+    # Allow manual triggering
+
+jobs:
+  proxy-scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v3
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests
+    
+    - name: Run Proxy Scraper
+      env:
+        # Target URL to scrape
+        TARGET_URL: ${{ vars.TARGET_URL }}
+        
+        # Comma-separated list of proxy sources (optional)
+        # If not provided, default sources will be used
+        PROXY_SOURCES: ${{ vars.PROXY_SOURCES }}
+      run: |
+        python proxy-rotation-scraper.py
+    
+    - name: Log Results
+      uses: actions/upload-artifact@v3
+      with:
+        name: scraping-logs
+        path: scraping_logs.txt
+        retention-days: 5
